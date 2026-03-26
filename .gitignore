@@ -26,6 +26,9 @@ venv/
 # macOS
 .DS_Store
 
+# Claude Code local settings (may contain personal paths/IDs)
+.claude/settings.local.json
+
 # IDE
 .idea/
 *.swp

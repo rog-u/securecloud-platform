@@ -1,7 +1,6 @@
 variable "subscription_id" {
-  description = "Azure Subscription ID"
+  description = "Azure Subscription ID — set via terraform.tfvars or TF_VAR_subscription_id"
   type        = string
-  default     = "7608358f-1d57-4d87-ad7b-0eabc551e9aa"
 }
 
 variable "project" {
