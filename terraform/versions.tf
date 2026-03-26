@@ -11,5 +11,11 @@ terraform {
 
 provider "azurerm" {
   subscription_id = var.subscription_id
-  features {}
+  features {
+    resource_group {
+      # Allow destroying RGs that contain auto-provisioned resources
+      # (e.g. Traffic Analytics creates dataCollectionEndpoints/Rules)
+      prevent_deletion_if_contains_resources = false
+    }
+  }
 }

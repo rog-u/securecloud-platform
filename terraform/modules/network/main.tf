@@ -55,6 +55,47 @@ resource "azurerm_subnet" "private" {
 }
 
 # ---------------------------------------------------------------------------
+# Phase 2a Subnets
+# ---------------------------------------------------------------------------
+
+# AKS subnet — Azure CNI assigns a VNet IP to every pod, so this needs to be
+# large (/18 = 16K IPs). No user-managed NSG — AKS creates its own on the
+# node NICs and needs to add rules dynamically for load balancers and probes.
+resource "azurerm_subnet" "aks" {
+  name                 = "${local.name_prefix}-aks"
+  resource_group_name  = azurerm_resource_group.main.name
+  virtual_network_name = azurerm_virtual_network.main.name
+  address_prefixes     = [var.aks_subnet_prefix]
+}
+
+# Application Gateway subnet — must be dedicated (no other resources).
+# No user-managed NSG — App Gateway v2 requires GatewayManager access
+# and manages its own required rules.
+resource "azurerm_subnet" "appgw" {
+  name                 = "${local.name_prefix}-appgw"
+  resource_group_name  = azurerm_resource_group.main.name
+  virtual_network_name = azurerm_virtual_network.main.name
+  address_prefixes     = [var.appgw_subnet_prefix]
+}
+
+# PostgreSQL subnet — delegated to Azure Container Instances
+# for running containerized PostgreSQL with VNet integration
+resource "azurerm_subnet" "postgres" {
+  name                 = "${local.name_prefix}-postgres"
+  resource_group_name  = azurerm_resource_group.main.name
+  virtual_network_name = azurerm_virtual_network.main.name
+  address_prefixes     = [var.postgres_subnet_prefix]
+
+  delegation {
+    name = "aci-delegation"
+    service_delegation {
+      name    = "Microsoft.ContainerInstance/containerGroups"
+      actions = ["Microsoft.Network/virtualNetworks/subnets/action"]
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------
 # NAT Gateway
 # Gives private subnet resources outbound internet access (for pulling images,
 # calling APIs) without exposing them inbound.
@@ -93,6 +134,18 @@ resource "azurerm_subnet_nat_gateway_association" "private" {
   nat_gateway_id = azurerm_nat_gateway.main.id
 }
 
+# AKS nodes need outbound internet for image pulls, DNS, Azure API calls
+resource "azurerm_subnet_nat_gateway_association" "aks" {
+  subnet_id      = azurerm_subnet.aks.id
+  nat_gateway_id = azurerm_nat_gateway.main.id
+}
+
+# PostgreSQL Flexible Server needs outbound for Azure management traffic
+resource "azurerm_subnet_nat_gateway_association" "postgres" {
+  subnet_id      = azurerm_subnet.postgres.id
+  nat_gateway_id = azurerm_nat_gateway.main.id
+}
+
 # ---------------------------------------------------------------------------
 # Network Security Groups (NSGs)
 # In Azure, NSGs serve the role of BOTH AWS Security Groups (stateful, per-resource)
@@ -101,6 +154,46 @@ resource "azurerm_subnet_nat_gateway_association" "private" {
 # Rules: lower priority number = evaluated first.
 # Default built-in rules at priority 65000-65500 deny all inbound not matched above.
 # ---------------------------------------------------------------------------
+
+# Public tier NSG: allow HTTPS from the internet (for App Gateway in Phase 2)
+resource "azurerm_network_security_group" "public" {
+  name                = "${local.name_prefix}-nsg-public"
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
+
+  security_rule {
+    name                       = "Allow-HTTPS-Inbound"
+    priority                   = 100
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "443"
+    source_address_prefix      = "Internet"
+    destination_address_prefix = "*"
+  }
+
+  security_rule {
+    name                       = "Deny-All-Inbound"
+    priority                   = 4000
+    direction                  = "Inbound"
+    access                     = "Deny"
+    protocol                   = "*"
+    source_port_range          = "*"
+    destination_port_range     = "*"
+    source_address_prefix      = "*"
+    destination_address_prefix = "*"
+  }
+
+  tags = { Name = "${local.name_prefix}-nsg-public" }
+}
+
+resource "azurerm_subnet_network_security_group_association" "public" {
+  count = length(var.public_subnet_prefixes)
+
+  subnet_id                 = azurerm_subnet.public[count.index].id
+  network_security_group_id = azurerm_network_security_group.public.id
+}
 
 # App tier NSG: only allow port 8000 from the public subnets (where App Gateway lives)
 resource "azurerm_network_security_group" "app" {
@@ -176,6 +269,12 @@ resource "azurerm_subnet_network_security_group_association" "app" {
 
   subnet_id                 = azurerm_subnet.private[count.index].id
   network_security_group_id = azurerm_network_security_group.app.id
+}
+
+# Associate the DB NSG with the postgres subnet
+resource "azurerm_subnet_network_security_group_association" "db" {
+  subnet_id                 = azurerm_subnet.postgres.id
+  network_security_group_id = azurerm_network_security_group.db.id
 }
 
 # ---------------------------------------------------------------------------

@@ -28,7 +28,7 @@ venv/
 
 # Claude Code
 .claude/
-CLAUDE.md
+docs/CLAUDE.md
 
 # IDE
 .idea/

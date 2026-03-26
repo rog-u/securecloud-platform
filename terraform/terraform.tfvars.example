@@ -1,1 +1,2 @@
-subscription_id = "your-azure-subscription-id"
+subscription_id   = "your-azure-subscription-id"
+db_admin_password = "your-secure-password-here"

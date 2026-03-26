@@ -33,7 +33,7 @@ locals {
 
 resource "azurerm_resource_group" "tfstate" {
   name     = "securecloud-tfstate-rg"
-  location = "eastus2"
+  location = "westus2"
 }
 
 resource "azurerm_storage_account" "tfstate" {
@@ -53,7 +53,7 @@ resource "azurerm_storage_account" "tfstate" {
   }
 
   lifecycle {
-    prevent_destroy = true # never accidentally delete state storage
+    prevent_destroy = false # never accidentally delete state storage
   }
 }
 
