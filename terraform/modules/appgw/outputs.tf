@@ -12,3 +12,8 @@ output "appgw_public_ip" {
   description = "Public IP address of the Application Gateway frontend"
   value       = azurerm_public_ip.appgw.ip_address
 }
+
+output "appgw_subnet_id" {
+  description = "App Gateway subnet ID — passed to AKS module for AGIC role assignment"
+  value       = var.appgw_subnet_id
+}

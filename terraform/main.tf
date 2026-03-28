@@ -33,6 +33,7 @@ module "aks" {
   log_analytics_workspace_id = module.network.log_analytics_workspace_id
   acr_id                     = module.acr.acr_id
   appgw_id                   = module.appgw.appgw_id
+  appgw_subnet_id            = module.appgw.appgw_subnet_id
 
   depends_on = [module.acr, module.appgw]
 }
@@ -46,20 +47,3 @@ module "acr" {
   resource_group_name = module.network.resource_group_name
 }
 
-module "database" {
-  source = "./modules/database"
-
-  project                          = var.project
-  environment                      = var.environment
-  location                         = var.location
-  resource_group_name              = module.network.resource_group_name
-  vnet_id                          = module.network.vnet_id
-  postgres_subnet_id               = module.network.postgres_subnet_id
-  postgres_subnet_delegation_ready = module.network.postgres_subnet_delegation_ready
-  db_admin_username                = var.db_admin_username
-  db_admin_password                = var.db_admin_password
-  
-  # Use ACR with managed identity authentication
-  acr_id           = module.acr.acr_id
-  acr_login_server = module.acr.acr_login_server
-}

@@ -244,7 +244,7 @@ resource "azurerm_network_security_group" "db" {
     protocol                   = "Tcp"
     source_port_range          = "*"
     destination_port_range     = "5432"
-    source_address_prefixes    = var.private_subnet_prefixes
+    source_address_prefixes    = concat(var.private_subnet_prefixes, [var.aks_subnet_prefix])
     destination_address_prefix = "*"
   }
 

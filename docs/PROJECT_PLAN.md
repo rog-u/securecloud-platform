@@ -21,13 +21,13 @@ where a misconfiguration isn't just a compliance finding — it's an operational
 [ Edge Device / Simulator ]
           |
           v (HTTPS, authenticated)
-   [ Application Gateway (public subnets) ]   <-- ingress + WAF
+   [ Application Gateway (public subnets) ]   <-- ingress, AGIC-managed routing
           |
           v (port 8000, NSG-gated)
    [ AKS Cluster (private subnets) ]          <-- telemetry API pods
           |
-          v (port 5432, NSG-gated)
-   [ PostgreSQL Container (postgres subnet) ]  <-- ACI + Azure Files persistent storage
+          v (port 5432, K8s service)
+   [ PostgreSQL StatefulSet (AKS) ]           <-- Azure Disk PVC (persistent, POSIX-safe)
           |
    [ Private VNet ]                            <-- network boundary
           |
@@ -55,7 +55,7 @@ the security layer, not the business logic."*
 |-------|------------------------|
 | 0 | Python, FastAPI, REST API design, Docker, containerization |
 | 1 | Terraform, Azure VNet, NSGs, NAT Gateway, VNet Flow Logs, Log Analytics, Azure Blob Storage (remote state) |
-| 2a | Azure Kubernetes Service (AKS), Azure CNI, Azure Container Registry (ACR), Application Gateway Ingress, Azure Container Instances (ACI), Azure Files, PostgreSQL containerization |
+| 2a | Azure Kubernetes Service (AKS), Azure CNI, Azure Container Registry (ACR), Application Gateway Ingress Controller (AGIC), Kubernetes StatefulSet, Kubernetes PersistentVolumeClaim, Azure Disk (managed-csi), PostgreSQL containerization |
 | 2b | Kubernetes RBAC, Pod Security Standards, Network Policies, Kyverno, Workload Identity, Key Vault CSI Driver, kube-bench |
 | 3 | Microsoft Defender for Cloud, Azure Policy, Azure Monitor, Azure Activity Log, Python (azure-sdk), Azure Functions |
 | 4 | GitHub Actions, Checkov (IaC SAST), Trivy (container scanning), Gitleaks, SBOM generation, OIDC federated credentials |
@@ -138,7 +138,7 @@ networking knowledge, and the "automate everything" mandate — all required qua
 
 ---
 
-## Phase 2a — AKS Cluster + Deploy App
+## Phase 2a — AKS Cluster + Deploy App [COMPLETE]
 
 Deploy AKS, stand up the database, and get the telemetry API running end-to-end.
 Focus is on a working deployment — security hardening comes in Phase 2b.
@@ -147,26 +147,33 @@ Focus is on a working deployment — security hardening comes in Phase 2b.
 - AKS with private cluster (API server not exposed to internet)
 - Azure CNI networking: pods get VNet IPs directly (unlike kubenet where pods are NAT'd behind the node IP)
 - Azure Container Registry (ACR): private image registry, integrated with AKS via managed identity
-- Application Gateway Ingress Controller (AGIC): Azure-native L7 ingress, sits in the public subnets, routes traffic to AKS pods — also provides WAF capability
-- Azure Container Instances (ACI) running PostgreSQL 16: containerized database in dedicated private subnet with persistent Azure Files storage (no public exposure)
-- Azure Storage Account + Azure Files: persistent volume for PostgreSQL data
-- Kubernetes manifests: Deployment, Service, ConfigMap, Secrets
+- Application Gateway Ingress Controller (AGIC): Azure-native L7 ingress add-on; watches Kubernetes Ingress objects and rewrites App Gateway routing rules automatically. Requires Reader on RG + Contributor on App Gateway + Network Contributor on App Gateway subnet — all managed via Terraform role assignments.
+- Kubernetes StatefulSet: the standard K8s primitive for stateful workloads; each pod gets a stable identity and a dedicated persistent volume
+- PersistentVolumeClaim (PVC) backed by Azure Disk (`managed-csi`): Azure Disk is a block device (ext4) and supports POSIX file ownership — required by PostgreSQL. Azure Files (SMB) does not support POSIX ownership and cannot be used for PostgreSQL data directories.
+- Kubernetes Secrets: credentials stored in cluster (upgrade to Key Vault in Phase 2b)
+- Multi-platform Docker builds: AKS nodes are AMD64; Mac Apple Silicon is ARM64 — images must be built with `--platform linux/amd64`
+
+### Key Decisions & Issues Resolved
+- **ACI → StatefulSet migration**: PostgreSQL was initially deployed as Azure Container Instance with Azure Files storage. Azure Files (SMB) does not support POSIX `chown` — PostgreSQL crashed with `wrong ownership` on the data directory. Replaced with a K8s StatefulSet + Azure Disk PVC which supports proper POSIX permissions.
+- **AGIC role assignments missing**: AGIC's managed identity was not granted Azure RBAC permissions on deploy, causing 403 crash loops and an empty App Gateway backend pool. Added three `azurerm_role_assignment` resources to the AKS Terraform module so they are created automatically on every deploy.
+- **ARM64 image**: `docker pull postgres:16-alpine` on Apple Silicon pulls the ARM variant. AKS nodes are x86_64. Fix: `docker buildx build --platform linux/amd64`.
+- **NSG blocking postgres**: Added inbound rule on the db-tier NSG allowing port 5432 from the AKS subnet CIDR.
 
 ### Checklist
-- [ ] Create Terraform module `modules/aks/` for the AKS cluster
-- [ ] Deploy AKS cluster (`azurerm_kubernetes_cluster`) in private subnets with `private_cluster_enabled = true`
-- [ ] Enable Azure CNI networking; configure pod CIDR within the private subnet range
-- [x] Create Azure Container Registry (ACR) via Terraform; attach to AKS (`azurerm_kubernetes_cluster` → `acr_pull` role)
-- [ ] Build and push the telemetry API image to ACR
-- [ ] Deploy Application Gateway in public subnets; enable AGIC add-on on AKS
-- [x] Create Azure Storage Account with Azure Files share for PostgreSQL persistent storage
-- [x] Deploy PostgreSQL 16 in Azure Container Instance (`azurerm_container_group`) in dedicated postgres subnet with subnet delegation to `Microsoft.ContainerInstance/containerGroups`
-- [x] Mount Azure Files share to PostgreSQL container at `/var/lib/postgresql/data` for data persistence
-- [x] Configure PostgreSQL container with private IP only (no public exposure)
-- [ ] Write Kubernetes manifests: `Deployment`, `Service`, `ConfigMap` for the telemetry API
-- [ ] Store database credentials in Kubernetes Secret (upgraded to Key Vault in Phase 2b)
-- [ ] Confirm end-to-end: `curl POST /telemetry` through Application Gateway → AKS pod → PostgreSQL container
-- [ ] Verify NAT Gateway handles pod outbound traffic (image pulls, DNS) and PostgreSQL container outbound traffic
+- [x] Create Terraform module `modules/aks/` for the AKS cluster
+- [x] Deploy AKS cluster (`azurerm_kubernetes_cluster`) in private subnets with `private_cluster_enabled = true`
+- [x] Enable Azure CNI networking; pods get real VNet IPs
+- [x] Create Azure Container Registry (ACR) via Terraform; attach to AKS via kubelet managed identity (AcrPull)
+- [x] Build and push telemetry API image to ACR (`--platform linux/amd64`)
+- [x] Push `postgres:16-alpine` (AMD64) to ACR
+- [x] Deploy Application Gateway in public subnets; enable AGIC add-on on AKS
+- [x] Add AGIC role assignments to Terraform: Reader (RG), Contributor (App Gateway), Network Contributor (App Gateway subnet)
+- [x] Write Kubernetes manifests: `Deployment`, `Service`, `Ingress` for the telemetry API
+- [x] Deploy PostgreSQL as Kubernetes StatefulSet with Azure Disk PVC (10Gi, `managed-csi`)
+- [x] Create Kubernetes Service for postgres (ClusterIP, port 5432)
+- [x] Store credentials in Kubernetes Secret (`DATABASE_URL`, `API_KEY`, `POSTGRES_USER`, `POSTGRES_PASSWORD`)
+- [x] Confirm end-to-end: `curl http://20.109.156.186/health` → `{"status":"ok"}`
+- [x] Verify NAT Gateway handles pod outbound traffic
 
 ---
 

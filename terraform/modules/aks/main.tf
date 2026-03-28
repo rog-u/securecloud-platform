@@ -149,3 +149,37 @@ resource "azurerm_role_assignment" "aks_acr_pull" {
   role_definition_name = "AcrPull"
   principal_id         = azurerm_kubernetes_cluster.main.kubelet_identity[0].object_id
 }
+
+# ---------------------------------------------------------------------------
+# AGIC managed identity role assignments
+#
+# The AGIC add-on creates its own managed identity. It needs:
+#   Reader on the resource group  — to discover the App Gateway
+#   Contributor on the App Gateway — to update routing rules
+#   Network Contributor on the App Gateway subnet — to join the subnet
+# Without these, AGIC crashes with 403 errors and never programs the gateway.
+# ---------------------------------------------------------------------------
+
+locals {
+  agic_principal_id = azurerm_kubernetes_cluster.main.ingress_application_gateway[0].ingress_application_gateway_identity[0].object_id
+}
+
+resource "azurerm_role_assignment" "agic_rg_reader" {
+  scope                = "/subscriptions/${data.azurerm_subscription.current.subscription_id}/resourceGroups/${var.resource_group_name}"
+  role_definition_name = "Reader"
+  principal_id         = local.agic_principal_id
+}
+
+resource "azurerm_role_assignment" "agic_appgw_contributor" {
+  scope                = var.appgw_id
+  role_definition_name = "Contributor"
+  principal_id         = local.agic_principal_id
+}
+
+resource "azurerm_role_assignment" "agic_subnet_network_contributor" {
+  scope                = var.appgw_subnet_id
+  role_definition_name = "Network Contributor"
+  principal_id         = local.agic_principal_id
+}
+
+data "azurerm_subscription" "current" {}

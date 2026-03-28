@@ -37,3 +37,8 @@ variable "appgw_id" {
   description = "Application Gateway resource ID — enables AGIC as an AKS managed add-on"
   type        = string
 }
+
+variable "appgw_subnet_id" {
+  description = "App Gateway subnet ID — AGIC needs Network Contributor to join it"
+  type        = string
+}
